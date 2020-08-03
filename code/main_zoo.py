@@ -4,13 +4,30 @@ import argparse
 
 from zoo import init_spark_on_local, init_spark_on_yarn
 from zoo.ray import RayContext
-from zoo.orca.learn.pytorch import PyTorchTrainer, PyTorchHorovodEstimator
+from zoo.orca.learn.pytorch import PyTorchTrainer, Estimator
 from zoo.orca.learn.pytorch.training_operator import TrainingOperator
 
 sys.path.append('../nn_tools/')
 
 
 class EvaluateOperator(TrainingOperator):
+    # This is to make the TrainingOperator works for both PyTorchTrainer and Estimator.
+    def __init__(self,
+                 config,
+                 models,
+                 optimizers,
+                 world_rank,
+                 train_loader=None,
+                 validation_loader=None,
+                 criterion=None,
+                 schedulers=None,
+                 device_ids=None,
+                 use_gpu=False,
+                 use_fp16=False,
+                 use_tqdm=False):
+        super(EvaluateOperator, self).__init__(config, models, optimizers, world_rank, criterion,
+                                               schedulers, device_ids, use_gpu, use_fp16, use_tqdm)
+
     def validate(self, val_iterator, info):
         sys.path.append('spinal_detection_baseline')
         from code.core.disease.evaluation import Evaluator
@@ -31,23 +48,30 @@ class EvaluateOperator(TrainingOperator):
         return metric_meters.summary()
 
 
-def data_creator(config):
+def train_data_creator(config):
     sys.path.append('spinal_detection_baseline')
     from code.core.disease.data_loader import DisDataLoader
     from code.core.structure import construct_studies
 
     train_studies, train_annotation, train_counter = construct_studies(
         'data/lumbar_train150', 'data/lumbar_train150_annotation.json', multiprocessing=True)
-    valid_studies, valid_annotation, valid_counter = construct_studies(
-        'data/train/', 'data/lumbar_train51_annotation.json', multiprocessing=True)
-
-    # 设定训练参数
     train_dataloader = DisDataLoader(
         train_studies, train_annotation, batch_size=config["batch_size"], num_workers=3,
         num_rep=1, prob_rotate=1, max_angel=180, sagittal_size=config["sagittal_size"],
         transverse_size=config["sagittal_size"], k_nearest=0)
+    return train_dataloader
 
-    return train_dataloader, valid_studies
+
+def val_data_creator(config):
+    from code.core.structure import construct_studies
+    valid_studies, valid_annotation, valid_counter = construct_studies(
+        'data/train/', 'data/lumbar_train51_annotation.json', multiprocessing=True)
+    return valid_studies
+
+
+def data_creator(config):
+    return train_data_creator(config), val_data_creator(config)
+
 
 def model_creator(config):
     sys.path.append('spinal_detection_baseline')
@@ -116,29 +140,26 @@ if __name__ == '__main__':
     ray_ctx.init()
 
     train_args = {"model_creator": model_creator,
-                 "data_creator": data_creator,
-                 "optimizer_creator": optimizer_creator,
-                 "loss_creator": loss_creator,
-                 "training_operator_cls": EvaluateOperator,
-                 "config": {"sagittal_size": (512, 512),
-                            "batch_size": 8}}
-    if opt.backend == "horovod":
-        trainer_class = PyTorchHorovodEstimator
-    else:
-        trainer_class = PyTorchTrainer
-        train_args["num_workers"] = opt.num_executors
-        train_args["use_tqdm"] = True
-    trainer = trainer_class(**train_args)
-
+                  "optimizer_creator": optimizer_creator,
+                  "loss_creator": loss_creator,
+                  "training_operator_cls": EvaluateOperator,
+                  "config": {"sagittal_size": (512, 512),
+                             "batch_size": 8}}
     start_time = time.time()
     if opt.backend == "horovod":
-        for i in range(opt.epochs):
-            train_stats = trainer.train()
+        estimator = Estimator.from_model_creator(**train_args)
+        train_stats = estimator.fit(train_data_creator, epochs=opt.epochs)
+        val_stats = estimator.evaluate(val_data_creator)
     else:
-        train_stats = trainer.train(nb_epoch=opt.epochs)  # epochs=num_rep?
-    print(train_stats)
-    val_stats = trainer.validate()
-    print(val_stats)
+        train_args["data_creator"] = data_creator
+        train_args["num_workers"] = opt.num_executors
+        train_args["use_tqdm"] = True
+        trainer = PyTorchTrainer(**train_args)
+        train_stats = trainer.train(nb_epoch=opt.epochs)
+        val_stats = trainer.validate()
+
+    print("train stats: {}".format(train_stats))
+    print("validation stats: {}".format(val_stats))
 
     # torch.save(dis_model.cpu().state_dict(), 'models/baseline.dis_model')
     # # 预测
