@@ -1,4 +1,3 @@
-import sys
 import time
 import argparse
 
@@ -6,8 +5,6 @@ from zoo import init_spark_on_local, init_spark_on_yarn
 from zoo.ray import RayContext
 from zoo.orca.learn.pytorch import PyTorchTrainer, Estimator
 from zoo.orca.learn.pytorch.training_operator import TrainingOperator
-
-sys.path.append('../nn_tools/')
 
 
 class EvaluateOperator(TrainingOperator):
@@ -29,6 +26,7 @@ class EvaluateOperator(TrainingOperator):
                                                schedulers, device_ids, use_gpu, use_fp16, use_tqdm)
 
     def validate(self, val_iterator, info):
+        import sys
         sys.path.append('spinal_detection_baseline')
         from code.core.disease.evaluation import Evaluator
         from ray.util.sgd.utils import AverageMeterCollection
@@ -49,6 +47,7 @@ class EvaluateOperator(TrainingOperator):
 
 
 def train_data_creator(config):
+    import sys
     sys.path.append('spinal_detection_baseline')
     from code.core.disease.data_loader import DisDataLoader
     from code.core.structure import construct_studies
@@ -63,6 +62,8 @@ def train_data_creator(config):
 
 
 def val_data_creator(config):
+    import sys
+    sys.path.append('spinal_detection_baseline')
     from code.core.structure import construct_studies
     valid_studies, valid_annotation, valid_counter = construct_studies(
         'data/train/', 'data/lumbar_train51_annotation.json', multiprocessing=True)
@@ -74,6 +75,7 @@ def data_creator(config):
 
 
 def model_creator(config):
+    import sys
     sys.path.append('spinal_detection_baseline')
     from torchvision.models.detection.backbone_utils import resnet_fpn_backbone
     from code.core.key_point import KeyPointModel
@@ -91,6 +93,7 @@ def optimizer_creator(model, config):
     return torch.optim.AdamW(model.parameters(), lr=1e-5)
 
 def loss_creator(config):
+    import sys
     sys.path.append('spinal_detection_baseline')
     # Since NullLoss is not a TorchLoss, it can't be directly passed into PyTorchTrainer.
     from code.core.key_point import NullLoss
